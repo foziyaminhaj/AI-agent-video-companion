@@ -1,14 +1,52 @@
-import React, { useEffect, useCallback, useState } from "react";
-import ReactPlayer from "react-player";
+import React, { useEffect, useCallback, useState, useRef } from "react";
 import peer from "../service/peer";
 import { useSocket } from "../context/SocketProvider";
+import useEmotionDetection from "../hooks/useEmotionDetection";
+import useSpeechRecognition from "../hooks/useSpeechRecognition";
+import VideoPlayer from "../components/VideoPlayer";
 import "./RoomPage.css"; // ✅ Import CSS file
+
+// Emotion emoji mapping (shared constant)
+const emotionEmojiMap = {
+  happy: '😄',
+  sad: '😢',
+  angry: '😠',
+  fearful: '😨',
+  surprised: '😲',
+  disgusted: '🤢',
+  neutral: '😐',
+  funny: '😂', // Special case: very high happy confidence
+};
 
 const RoomPage = () => {
   const socket = useSocket();
   const [remoteSocketId, setRemoteSocketId] = useState(null);
   const [myStream, setMyStream] = useState();
   const [remoteStream, setRemoteStream] = useState();
+  
+  // Refs for video elements (needed for face-api.js)
+  const myVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  
+  // AI Features - Local (My Stream)
+  const {
+    emotion: myEmotion,
+    emotionConfidence: myEmotionConfidence,
+    emotionEmoji: myEmotionEmoji,
+    isModelLoaded,
+    loadingError: modelLoadingError,
+  } = useEmotionDetection(myVideoRef, !!myStream);
+  
+  const {
+    transcript: myTranscript,
+    isListening: myIsListening,
+    isSupported: speechSupported,
+  } = useSpeechRecognition(!!myStream);
+  
+  // AI Features - Remote (Other User)
+  const [remoteEmotion, setRemoteEmotion] = useState(null);
+  const [remoteEmotionEmoji, setRemoteEmotionEmoji] = useState(null);
+  const [remoteTranscript, setRemoteTranscript] = useState('');
 
   const handleUserJoined = useCallback(({ email, id }) => {
     console.log(`Email ${email} joined room`);
@@ -87,12 +125,35 @@ const RoomPage = () => {
     });
   }, []);
 
+  // Note: VideoPlayer component handles setting srcObject via ref
+  // No need to manually set it here - VideoPlayer does it automatically
+
+  // Send AI data to remote user
+  useEffect(() => {
+    if (remoteSocketId && (myEmotion || myTranscript)) {
+      socket.emit("ai:data", {
+        to: remoteSocketId,
+        emotion: myEmotion,
+        emotionConfidence: myEmotionConfidence,
+        transcript: myTranscript,
+      });
+    }
+  }, [remoteSocketId, myEmotion, myTranscript, myEmotionConfidence, socket]);
+
+  // Handle incoming AI data from remote user
+  const handleAIData = useCallback(({ emotion, transcript }) => {
+    setRemoteEmotion(emotion);
+    setRemoteEmotionEmoji(emotion ? emotionEmojiMap[emotion] : null);
+    setRemoteTranscript(transcript || '');
+  }, []); // emotionEmojiMap is stable, no need in deps
+
   useEffect(() => {
     socket.on("user:joined", handleUserJoined);
     socket.on("incomming:call", handleIncommingCall);
     socket.on("call:accepted", handleCallAccepted);
     socket.on("peer:nego:needed", handleNegoNeedIncomming);
     socket.on("peer:nego:final", handleNegoNeedFinal);
+    socket.on("ai:data", handleAIData);
 
     return () => {
       socket.off("user:joined", handleUserJoined);
@@ -100,6 +161,7 @@ const RoomPage = () => {
       socket.off("call:accepted", handleCallAccepted);
       socket.off("peer:nego:needed", handleNegoNeedIncomming);
       socket.off("peer:nego:final", handleNegoNeedFinal);
+      socket.off("ai:data", handleAIData);
     };
   }, [
     socket,
@@ -108,6 +170,7 @@ const RoomPage = () => {
     handleCallAccepted,
     handleNegoNeedIncomming,
     handleNegoNeedFinal,
+    handleAIData,
   ]);
 
   return (
@@ -131,16 +194,70 @@ const RoomPage = () => {
 
         <div className="video-section">
           {myStream && (
-            <div className="video-container">
-              <h2>My Stream</h2>
-              <ReactPlayer playing muted height="180px" width="320px" url={myStream} />
+            <div className={`video-container video-container-local ${myEmotion ? `emotion-${myEmotion}` : ''}`}>
+              <div className="video-header">
+                <h2>My Stream</h2>
+                {myEmotion && (
+                  <div className="emotion-indicator">
+                    <span className="emotion-emoji">{myEmotionEmoji}</span>
+                    <span className="emotion-label">{myEmotion}</span>
+                    <span className="emotion-confidence">
+                      {Math.round(myEmotionConfidence * 100)}%
+                    </span>
+                  </div>
+                )}
+                {!isModelLoaded && !modelLoadingError && (
+                  <div className="model-loading">Loading AI models...</div>
+                )}
+                {modelLoadingError && (
+                  <div className="model-error">
+                    ⚠️ Models not loaded. {modelLoadingError.includes('CDN') ? 'Download models manually.' : 'Check console for details.'}
+                  </div>
+                )}
+                {isModelLoaded && !myEmotion && (
+                  <div className="emotion-status">👁️ Looking for face...</div>
+                )}
+              </div>
+              <div className="video-wrapper">
+                <VideoPlayer stream={myStream} isMuted={true} ref={myVideoRef} />
+                {myTranscript && (
+                  <div className="caption-overlay caption-local">
+                    {myTranscript}
+                  </div>
+                )}
+                {myIsListening && (
+                  <div className="speech-indicator">
+                    🎤 Listening...
+                  </div>
+                )}
+                {!speechSupported && (
+                  <div className="speech-warning">
+                    ⚠️ Speech recognition not supported
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
           {remoteStream && (
-            <div className="video-container">
-              <h2>Remote Stream</h2>
-              <ReactPlayer playing height="180px" width="320px" url={remoteStream} />
+            <div className={`video-container video-container-remote ${remoteEmotion ? `emotion-${remoteEmotion}` : ''}`}>
+              <div className="video-header">
+                <h2>Remote Stream</h2>
+                {remoteEmotion && (
+                  <div className="emotion-indicator">
+                    <span className="emotion-emoji">{remoteEmotionEmoji}</span>
+                    <span className="emotion-label">{remoteEmotion}</span>
+                  </div>
+                )}
+              </div>
+              <div className="video-wrapper">
+                <VideoPlayer stream={remoteStream} isMuted={false} ref={remoteVideoRef} />
+                {remoteTranscript && (
+                  <div className="caption-overlay caption-remote">
+                    {remoteTranscript}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

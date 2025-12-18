@@ -35,4 +35,25 @@ io.on("connection", (socket) => {
     console.log("peer:nego:done", ans);
     io.to(to).emit("peer:nego:final", { from: socket.id, ans });
   });
+
+  // Handle AI data (emotion detection & captions)
+  socket.on("ai:data", ({ to, emotion, emotionConfidence, transcript }) => {
+    console.log(`AI data from ${socket.id} to ${to}:`, {
+      emotion,
+      confidence: emotionConfidence,
+      transcript: transcript?.substring(0, 50) + '...',
+    });
+    io.to(to).emit("ai:data", {
+      from: socket.id,
+      emotion,
+      emotionConfidence,
+      transcript,
+    });
+  });
+
+  socket.on("disconnect", () => {
+    console.log(`Socket Disconnected`, socket.id);
+    emailToSocketIdMap.delete(socketidToEmailMap.get(socket.id));
+    socketidToEmailMap.delete(socket.id);
+  });
 });
